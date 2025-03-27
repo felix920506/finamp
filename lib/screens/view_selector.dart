@@ -77,9 +77,12 @@ class _ViewSelectorState extends State<ViewSelector> {
                   _submitChoice();
                 } else {
                   if (mounted) {
-                    setState(() {
+                    // setState(() {
+                    //   isSubmitButtonEnabled = _views.values.contains(true);
+                    // });
+                    Future.microtask(() => setState(() {
                       isSubmitButtonEnabled = _views.values.contains(true);
-                    });
+                    }));
                   }
                 }
               }
