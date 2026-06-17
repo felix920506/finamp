@@ -41,18 +41,7 @@ Future<void> showOutputMenu({required BuildContext context, bool usePlayerTheme 
         //   item: item,
         //   useThemeImage: usePlayerTheme,
         // ),
-        Consumer(
-          builder: (context, ref, child) {
-            return VolumeSlider(
-              initialValue: (ref.watch(finampSettingsProvider.currentVolume) * 100).floor() / 100.0,
-              onChange: (double currentValue) async {
-                final audioHandler = GetIt.instance<MusicPlayerBackgroundTask>();
-                audioHandler.setVolume(currentValue);
-              },
-              forceLoading: true,
-            );
-          },
-        ),
+        const OutputVolumeSlider(),
         if (isDesktop)
           Center(
             child: Text(
@@ -290,6 +279,67 @@ class OutputSelectorTile extends StatelessWidget {
       },
       confirmationFeedback: false,
       enabled: true,
+    );
+  }
+}
+
+/// Volume control shown in the output menu.
+///
+/// By default this controls the per-app playback volume (which intentionally
+/// does not affect the system volume). When casting to an AirPlay receiver on
+/// iOS the per-app volume has no audible effect, since the audio is rendered by
+/// the receiver, so in that case the slider controls the AirPlay receiver's
+/// volume instead.
+class OutputVolumeSlider extends ConsumerStatefulWidget {
+  const OutputVolumeSlider({super.key});
+
+  @override
+  ConsumerState<OutputVolumeSlider> createState() => _OutputVolumeSliderState();
+}
+
+class _OutputVolumeSliderState extends ConsumerState<OutputVolumeSlider> {
+  final audioHandler = GetIt.instance<MusicPlayerBackgroundTask>();
+  StreamSubscription<AirPlayVolumeState>? _volumeSubscription;
+  bool _isAirPlayActive = false;
+  double _airPlayVolume = 0.0;
+
+  @override
+  void initState() {
+    super.initState();
+    if (Platform.isIOS) {
+      _volumeSubscription = audioHandler.airPlayVolumeStream.listen((state) {
+        if (!mounted) return;
+        setState(() {
+          _isAirPlayActive = state.isAirPlayActive;
+          _airPlayVolume = state.volume;
+        });
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _volumeSubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isAirPlayActive) {
+      return VolumeSlider(
+        initialValue: (_airPlayVolume * 100).floor() / 100.0,
+        onChange: (double currentValue) async {
+          await audioHandler.setAirPlayVolume(currentValue);
+        },
+        forceLoading: true,
+      );
+    }
+    return VolumeSlider(
+      initialValue: (ref.watch(finampSettingsProvider.currentVolume) * 100).floor() / 100.0,
+      onChange: (double currentValue) async {
+        audioHandler.setVolume(currentValue);
+      },
+      forceLoading: true,
     );
   }
 }

@@ -10,6 +10,10 @@ let flutterEngine = FlutterEngine(name: "SharedEngine", project: nil, allowHeadl
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, INPlayMediaIntentHandling {
+    // Bridges the active audio route's volume to Flutter so the in-app volume
+    // slider can control an AirPlay receiver's volume while casting.
+    private let outputVolumeChannel = OutputVolumeChannel()
+
     override func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -25,6 +29,9 @@ let flutterEngine = FlutterEngine(name: "SharedEngine", project: nil, allowHeadl
 
         // Set up method channel for Siri media intent handling
         setupSiriIntentChannel()
+
+        // Set up channels for controlling/observing the active audio route's volume (AirPlay)
+        outputVolumeChannel.register(with: flutterEngine.binaryMessenger)
 
         // Exclude the documents and support folders from iCloud backup since we keep songs there.
         if let documentsDir = try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true) {

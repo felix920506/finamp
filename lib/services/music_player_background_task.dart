@@ -66,6 +66,17 @@ class FadeState {
   }
 }
 
+/// Snapshot of the active audio route's volume and whether it is an AirPlay
+/// receiver. Emitted by [MusicPlayerBackgroundTask.airPlayVolumeStream].
+class AirPlayVolumeState {
+  const AirPlayVolumeState({required this.isAirPlayActive, required this.volume});
+
+  final bool isAirPlayActive;
+
+  /// Current route volume in the range 0.0 - 1.0.
+  final double volume;
+}
+
 class PlayerVolumeController {
   static final _volumeLogger = Logger("Volume");
 
@@ -170,6 +181,11 @@ class MusicPlayerBackgroundTask extends BaseAudioHandler with SeekHandler, Queue
   late final BehaviorSubject<FadeState> fadeState;
 
   final outputSwitcherChannel = MethodChannel('com.unicornsonlsd.finamp/output_switcher');
+
+  /// Emits the active audio route's volume and whether that route is AirPlay.
+  /// Only produces events on iOS; used to let the in-app volume slider control
+  /// the AirPlay receiver's volume while casting.
+  final outputVolumeEventChannel = const EventChannel('com.unicornsonlsd.finamp/output_volume');
 
   /// Some Bluetooth headsets send skip and pause/play media button events in
   /// very quick succession for a double-tap skip gesture. This guard ignores a
@@ -278,6 +294,54 @@ class MusicPlayerBackgroundTask extends BaseAudioHandler with SeekHandler, Queue
     } catch (e) {
       _outputLogger.severe("Failed to switch output: $e");
     }
+  }
+
+  /// Whether the current audio route is an AirPlay receiver (iOS only).
+  ///
+  /// When casting to AirPlay the in-app volume slider should control the
+  /// receiver's volume instead of the per-app playback volume, since the audio
+  /// is rendered remotely.
+  Future<bool> isAirPlayActive() async {
+    if (!Platform.isIOS) {
+      return false;
+    }
+    try {
+      final result = await outputSwitcherChannel.invokeMethod<bool>('isAirPlayActive');
+      return result ?? false;
+    } catch (e) {
+      _outputLogger.severe("Failed to query AirPlay status: $e");
+      return false;
+    }
+  }
+
+  /// Sets the active audio route's volume (the AirPlay receiver's volume when
+  /// casting). iOS only; a no-op elsewhere.
+  Future<void> setAirPlayVolume(double volume) async {
+    if (!Platform.isIOS) {
+      return;
+    }
+    try {
+      await outputSwitcherChannel.invokeMethod('setOutputVolume', {'volume': volume.clamp(0.0, 1.0)});
+    } catch (e) {
+      _outputLogger.severe("Failed to set AirPlay volume: $e");
+    }
+  }
+
+  /// Stream of the active audio route's volume and AirPlay status. Emits the
+  /// current state immediately on subscription and again whenever the route or
+  /// volume changes (e.g. the AirPlay device's own volume controls). iOS only;
+  /// an empty stream elsewhere.
+  Stream<AirPlayVolumeState> get airPlayVolumeStream {
+    if (!Platform.isIOS) {
+      return const Stream.empty();
+    }
+    return outputVolumeEventChannel.receiveBroadcastStream().map((event) {
+      final map = Map<String, dynamic>.from(event as Map);
+      return AirPlayVolumeState(
+        isAirPlayActive: map['isAirPlayActive'] as bool? ?? false,
+        volume: (map['volume'] as num?)?.toDouble() ?? 0.0,
+      );
+    });
   }
 
   static Future<void> configureAudioSession() async {
