@@ -10,6 +10,13 @@
 //  the system output volume (which is the AirPlay device's volume) through a
 //  hidden MPVolumeView.
 //
+//  The MPVolumeView's embedded slider is also the source of truth for reading the
+//  active route's volume: it reflects the AirPlay receiver's volume and fires a
+//  `.valueChanged` action when that volume is changed from the system controls
+//  (hardware buttons, Control Center, etc.), which we forward to Flutter so the
+//  in-app slider stays in sync. `AVAudioSession.outputVolume` KVO is kept as a
+//  fallback, since it does not reliably track the volume of a remote AirPlay route.
+//
 
 import Flutter
 import MediaPlayer
@@ -20,14 +27,15 @@ class OutputVolumeChannel: NSObject, FlutterStreamHandler {
     static let methodChannelName = "com.unicornsonlsd.finamp/output_switcher"
     static let eventChannelName = "com.unicornsonlsd.finamp/output_volume"
 
-    /// Hidden volume view used to control the active route's volume. It must be
-    /// part of the view hierarchy and visible (non-hidden) for its embedded
-    /// slider to actually change the output volume, so we keep it offscreen and
-    /// nearly transparent.
+    /// Hidden volume view used to read and control the active route's volume. It
+    /// must be part of the view hierarchy and visible (non-hidden) for its
+    /// embedded slider to actually change the output volume, so we keep it
+    /// offscreen and nearly transparent.
     private let volumeView = MPVolumeView(frame: CGRect(x: -3000, y: -3000, width: 1, height: 1))
 
     private var eventSink: FlutterEventSink?
     private var volumeObservation: NSKeyValueObservation?
+    private var didBindSlider = false
 
     func register(with messenger: FlutterBinaryMessenger) {
         let methodChannel = FlutterMethodChannel(name: Self.methodChannelName, binaryMessenger: messenger)
@@ -51,7 +59,7 @@ class OutputVolumeChannel: NSObject, FlutterStreamHandler {
         case "isAirPlayActive":
             result(isAirPlayActive())
         case "getOutputVolume":
-            result(Double(AVAudioSession.sharedInstance().outputVolume))
+            result(currentRouteVolume())
         case "setOutputVolume":
             guard let args = call.arguments as? [String: Any],
                   let volume = args["volume"] as? Double else {
@@ -73,8 +81,9 @@ class OutputVolumeChannel: NSObject, FlutterStreamHandler {
     private func setOutputVolume(_ volume: Float) {
         DispatchQueue.main.async {
             self.attachVolumeView()
-            guard let slider = self.volumeView.subviews.compactMap({ $0 as? UISlider }).first else { return }
-            slider.value = max(0.0, min(1.0, volume))
+            // Setting the slider value programmatically does not fire its
+            // `.valueChanged` action, so this does not echo back to Flutter.
+            self.volumeSlider?.value = max(0.0, min(1.0, volume))
         }
     }
 
@@ -89,8 +98,7 @@ class OutputVolumeChannel: NSObject, FlutterStreamHandler {
             name: AVAudioSession.routeChangeNotification,
             object: nil
         )
-        // Observe the system output volume so that volume changes made on the
-        // AirPlay device (or via the hardware buttons) are reflected in the UI.
+        // Fallback observer for volume changes made via the hardware buttons.
         volumeObservation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.new]) { [weak self] _, _ in
             DispatchQueue.main.async { self?.emitState() }
         }
@@ -110,22 +118,56 @@ class OutputVolumeChannel: NSObject, FlutterStreamHandler {
         DispatchQueue.main.async { self.emitState() }
     }
 
+    /// Called when the active route's volume is changed from the system controls
+    /// (the MPVolumeView slider reflects this and fires `.valueChanged`).
+    @objc private func handleSliderVolumeChange(_ sender: UISlider) {
+        emitState()
+    }
+
     private func emitState() {
         guard let eventSink = eventSink else { return }
         let state: [String: Any] = [
             "isAirPlayActive": isAirPlayActive(),
-            "volume": Double(AVAudioSession.sharedInstance().outputVolume),
+            "volume": currentRouteVolume(),
         ]
         eventSink(state)
     }
 
     // MARK: - Helpers
 
+    /// The MPVolumeView's embedded slider, which reflects and controls the active
+    /// route's (e.g. AirPlay receiver's) volume.
+    private var volumeSlider: UISlider? {
+        return volumeView.subviews.compactMap { $0 as? UISlider }.first
+    }
+
+    private func currentRouteVolume() -> Double {
+        if let slider = volumeSlider {
+            return Double(slider.value)
+        }
+        return Double(AVAudioSession.sharedInstance().outputVolume)
+    }
+
     private func attachVolumeView() {
-        guard volumeView.superview == nil, let window = keyWindow() else { return }
-        volumeView.isHidden = false
-        volumeView.alpha = 0.01
-        window.addSubview(volumeView)
+        if volumeView.superview == nil, let window = keyWindow() {
+            volumeView.isHidden = false
+            volumeView.alpha = 0.01
+            window.addSubview(volumeView)
+        }
+        bindSliderTargetIfNeeded()
+        // The slider subview is created lazily after the volume view is laid out,
+        // so retry shortly in case it wasn't available yet.
+        if !didBindSlider {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.bindSliderTargetIfNeeded()
+            }
+        }
+    }
+
+    private func bindSliderTargetIfNeeded() {
+        guard !didBindSlider, let slider = volumeSlider else { return }
+        slider.addTarget(self, action: #selector(handleSliderVolumeChange(_:)), for: .valueChanged)
+        didBindSlider = true
     }
 
     private func keyWindow() -> UIWindow? {
