@@ -45,10 +45,11 @@ class OutputVolumeChannel: NSObject, FlutterStreamHandler {
 
         let eventChannel = FlutterEventChannel(name: Self.eventChannelName, binaryMessenger: messenger)
         eventChannel.setStreamHandler(self)
-        // The volume view is attached lazily (see onListen) rather than at launch:
-        // a persistent MPVolumeView suppresses the system volume HUD that pops up
-        // when pressing the hardware volume buttons, so we only keep it around
-        // while the output menu is open and actually observing/controlling volume.
+        // The volume view is attached lazily (see updateVolumeViewAttachment)
+        // rather than at launch: a live MPVolumeView suppresses the system volume
+        // HUD that pops up when pressing the hardware volume buttons, so we only
+        // keep it around while AirPlay is the active route (and the output menu is
+        // open), which is the only time we need to observe/control its volume.
     }
 
     // MARK: - Method channel
@@ -90,7 +91,6 @@ class OutputVolumeChannel: NSObject, FlutterStreamHandler {
 
     func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
         eventSink = events
-        attachVolumeView()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleRouteChange(_:)),
@@ -101,6 +101,7 @@ class OutputVolumeChannel: NSObject, FlutterStreamHandler {
         volumeObservation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.new]) { [weak self] _, _ in
             DispatchQueue.main.async { self?.emitState() }
         }
+        updateVolumeViewAttachment()
         emitState()
         return nil
     }
@@ -117,7 +118,10 @@ class OutputVolumeChannel: NSObject, FlutterStreamHandler {
     }
 
     @objc private func handleRouteChange(_ notification: Notification) {
-        DispatchQueue.main.async { self.emitState() }
+        DispatchQueue.main.async {
+            self.updateVolumeViewAttachment()
+            self.emitState()
+        }
     }
 
     /// Called when the active route's volume is changed from the system controls
@@ -148,6 +152,18 @@ class OutputVolumeChannel: NSObject, FlutterStreamHandler {
             return Double(slider.value)
         }
         return Double(AVAudioSession.sharedInstance().outputVolume)
+    }
+
+    /// Attaches the volume view only while AirPlay is the active route, and
+    /// removes it otherwise. A live MPVolumeView suppresses the system volume
+    /// HUD, so we limit that side effect to the only situation where we actually
+    /// need it: controlling/observing an AirPlay receiver's volume.
+    private func updateVolumeViewAttachment() {
+        if isAirPlayActive() {
+            attachVolumeView()
+        } else {
+            detachVolumeView()
+        }
     }
 
     private func attachVolumeView() {
