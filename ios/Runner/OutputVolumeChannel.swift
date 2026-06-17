@@ -45,16 +45,15 @@ class OutputVolumeChannel: NSObject, FlutterStreamHandler {
 
         let eventChannel = FlutterEventChannel(name: Self.eventChannelName, binaryMessenger: messenger)
         eventChannel.setStreamHandler(self)
-
-        DispatchQueue.main.async {
-            self.attachVolumeView()
-        }
+        // The volume view is attached lazily (see onListen) rather than at launch:
+        // a persistent MPVolumeView suppresses the system volume HUD that pops up
+        // when pressing the hardware volume buttons, so we only keep it around
+        // while the output menu is open and actually observing/controlling volume.
     }
 
     // MARK: - Method channel
 
     private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-        attachVolumeView()
         switch call.method {
         case "isAirPlayActive":
             result(isAirPlayActive())
@@ -111,6 +110,9 @@ class OutputVolumeChannel: NSObject, FlutterStreamHandler {
         volumeObservation?.invalidate()
         volumeObservation = nil
         eventSink = nil
+        // Remove the volume view so the system volume HUD works normally again
+        // once the output menu is closed.
+        detachVolumeView()
         return nil
     }
 
@@ -165,9 +167,19 @@ class OutputVolumeChannel: NSObject, FlutterStreamHandler {
     }
 
     private func bindSliderTargetIfNeeded() {
-        guard !didBindSlider, let slider = volumeSlider else { return }
+        guard !didBindSlider, volumeView.superview != nil, let slider = volumeSlider else { return }
         slider.addTarget(self, action: #selector(handleSliderVolumeChange(_:)), for: .valueChanged)
         didBindSlider = true
+    }
+
+    /// Removes the volume view from the hierarchy so the system volume HUD is no
+    /// longer suppressed once we no longer need to observe/control volume.
+    private func detachVolumeView() {
+        if didBindSlider, let slider = volumeSlider {
+            slider.removeTarget(self, action: #selector(handleSliderVolumeChange(_:)), for: .valueChanged)
+        }
+        didBindSlider = false
+        volumeView.removeFromSuperview()
     }
 
     private func keyWindow() -> UIWindow? {
